@@ -192,8 +192,8 @@
                 const statusEl = document.getElementById('ocrStatus');
                 statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> 載入中文字庫(初次較久)...';
                 
-                // 使用繁體中文與英文模型來辨識文字與數字
-                ocrWorker = await Tesseract.createWorker('chi_tra+eng');
+                // 使用陣列方式載入繁體中文與英文模型 (Tesseract v5 推薦寫法)
+                ocrWorker = await Tesseract.createWorker(['chi_tra', 'eng']);
                 
                 isOcrReady = true;
                 statusEl.innerHTML = '<i class="fa-solid fa-check mr-1"></i> 系統就緒';
@@ -218,16 +218,33 @@
             scanBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
 
             try {
-                // 將當下影片畫面繪製到 Canvas
                 const canvas = document.getElementById('captureCanvas');
                 const ctx = canvas.getContext('2d');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // --- 優化核心：只擷取掃描框內的影像，大幅提升中文辨識率 ---
+                const videoRect = video.getBoundingClientRect();
+                const boxRect = scanBox.getBoundingClientRect();
+
+                // 計算影片實際解析度與畫面顯示尺寸的比例
+                const scaleX = video.videoWidth / videoRect.width;
+                const scaleY = video.videoHeight / videoRect.height;
+
+                // 算出掃描框在實際影片上的座標與大小
+                const sx = (boxRect.left - videoRect.left) * scaleX;
+                const sy = (boxRect.top - videoRect.top) * scaleY;
+                const sWidth = boxRect.width * scaleX;
+                const sHeight = boxRect.height * scaleY;
+
+                // 設定 Canvas 尺寸為掃描框大小
+                canvas.width = sWidth;
+                canvas.height = sHeight;
+                
+                // 裁切繪製：只將掃描框內的影像繪製到 Canvas 上
+                ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
 
                 // 執行 OCR 辨識
                 const { data: { text } } = await ocrWorker.recognize(canvas);
-                console.log("OCR 原始文字:", text);
+                console.log("OCR 裁切後原始文字:", text);
 
                 // 停止動畫
                 scanBox.classList.remove('scanning');
@@ -270,10 +287,12 @@
             }
 
             // 尋找商品名稱：過濾掉純數字/符號的行，取最長的一行作為可能的商品名稱
-            const textLines = lines.filter(line => !line.match(/^[\d\s,.$NT:]+$/i));
+            const textLines = lines.filter(line => !line.match(/^[\d\s,.$NT:-]+$/i));
             if (textLines.length > 0) {
                 // 依長度排序取最長
                 name = textLines.sort((a, b) => b.length - a.length)[0];
+                // 優化：移除中文字之間可能因為 OCR 誤判產生的多餘空白 (例如 "蘋 果 汁" -> "蘋果汁")
+                name = name.replace(/([^\x00-\x7F])\s+([^\x00-\x7F])/g, '$1$2');
                 // 稍微清理雜訊，限制長度
                 if(name.length > 20) name = name.substring(0, 20) + '...';
             }

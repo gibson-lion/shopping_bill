@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>智慧購物金額計算器</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 FontAwesome 圖示 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- 引入 Tesseract.js 作為 OCR 引擎 -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        /* 掃描線動畫 */
+        @keyframes scanline {
+            0% { top: 0; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+        .scan-line {
+            position: absolute;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(34, 197, 94, 0.8);
+            box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+            animation: scanline 2s linear infinite;
+            display: none;
+        }
+        .scanning .scan-line {
+            display: block;
+        }
+        /* 隱藏原生卷軸但保留滾動功能 */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 h-screen flex flex-col overflow-hidden select-none">
+
+    <!-- 頂部導航列 -->
+    <header class="bg-blue-600 text-white p-4 shadow-md z-10 flex justify-between items-center shrink-0">
+        <h1 class="text-xl font-bold"><i class="fa-solid fa-cart-shopping mr-2"></i>購物計算器</h1>
+        <div class="text-sm bg-blue-700 px-3 py-1 rounded-full" id="ocrStatus">
+            <i class="fa-solid fa-spinner fa-spin mr-1"></i> 系統準備中
+        </div>
+    </header>
+
+    <!-- 相機視圖區 (上半部) -->
+    <div class="relative w-full bg-black flex-shrink-0" style="height: 45vh;">
+        <!-- 影片串流 -->
+        <video id="camera" class="w-full h-full object-cover" autoplay playsinline></video>
+        
+        <!-- 掃描框與疊加層 -->
+        <div class="absolute inset-0 pointer-events-none flex flex-col justify-center items-center">
+            <div class="text-white bg-black/50 px-4 py-1 rounded-full text-sm mb-4 backdrop-blur-sm">
+                請將價格對準框內
+            </div>
+            <!-- 掃描框 -->
+            <div id="scanBox" class="relative border-2 border-white/50 rounded-xl w-3/4 h-32 overflow-hidden transition-all duration-300">
+                <!-- 四個角落的裝飾 -->
+                <div class="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-green-400 rounded-tl-lg"></div>
+                <div class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-green-400 rounded-tr-lg"></div>
+                <div class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-green-400 rounded-bl-lg"></div>
+                <div class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-green-400 rounded-br-lg"></div>
+                <!-- 動態掃描線 -->
+                <div class="scan-line"></div>
+            </div>
+        </div>
+
+        <!-- 掃描按鈕 (浮動於相機與列表交界) -->
+        <button id="scanBtn" class="absolute -bottom-8 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white w-16 h-16 rounded-full shadow-lg border-4 border-gray-50 flex justify-center items-center text-2xl active:bg-blue-700 transition-colors disabled:bg-gray-400 z-20">
+            <i class="fa-solid fa-camera"></i>
+        </button>
+    </div>
+
+    <!-- 購物清單與總計區 (下半部) -->
+    <div class="flex-grow flex flex-col bg-gray-50 pt-10 pb-4 px-4 overflow-hidden relative z-0">
+        
+        <!-- 總計顯示 -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-4 flex justify-between items-end shrink-0">
+            <span class="text-gray-500 font-medium text-lg">目前總計</span>
+            <div class="text-3xl font-bold text-red-500">
+                $<span id="totalAmount">0</span>
+            </div>
+        </div>
+
+        <!-- 手動輸入按鈕 -->
+        <button onclick="openManualInput()" class="w-full bg-gray-200 text-gray-700 py-2 rounded-xl mb-4 text-sm font-medium hover:bg-gray-300 transition flex justify-center items-center shrink-0">
+            <i class="fa-solid fa-pen-to-square mr-2"></i>辨識失敗？手動輸入金額
+        </button>
+
+        <!-- 清單列表 -->
+        <div class="flex-grow overflow-y-auto no-scrollbar pb-10">
+            <ul id="shoppingList" class="space-y-3">
+                <!-- 列表項目將透過 JS 動態產生 -->
+                <li id="emptyState" class="text-center text-gray-400 py-8 flex flex-col items-center">
+                    <i class="fa-solid fa-receipt text-4xl mb-2 opacity-50"></i>
+                    <p>尚未加入任何商品</p>
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- ================= 模態視窗 (Modals) ================= -->
+
+    <!-- 金額確認視窗 -->
+    <div id="confirmModal" class="fixed inset-0 bg-black/60 z-50 hidden flex justify-center items-center px-4 backdrop-blur-sm transition-opacity">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform transition-transform scale-95" id="confirmModalContent">
+            <h3 class="text-xl font-bold text-gray-800 mb-2" id="confirmModalTitle">確認商品與金額</h3>
+            <p class="text-sm text-gray-500 mb-4" id="confirmModalDesc">請確認掃描結果，如有誤差可直接點擊修改。</p>
+            
+            <div class="mb-3">
+                <label class="block text-gray-700 text-sm font-bold mb-1" for="nameInput">商品名稱</label>
+                <input type="text" id="nameInput" class="w-full bg-gray-50 border border-gray-300 text-gray-900 rounded-xl focus:ring-blue-500 focus:border-blue-500 block p-3" placeholder="手動輸入或辨識結果">
+            </div>
+
+            <div class="mb-6 relative">
+                <label class="block text-gray-700 text-sm font-bold mb-1" for="priceInput">商品金額</label>
+                <div class="relative">
+                    <span class="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-500 font-bold text-xl">$</span>
+                    <input type="number" id="priceInput" class="w-full bg-gray-50 border border-gray-300 text-gray-900 text-2xl rounded-xl focus:ring-blue-500 focus:border-blue-500 block pl-10 p-3 font-bold" placeholder="0" inputmode="numeric">
+                </div>
+            </div>
+
+            <div class="flex space-x-3">
+                <button onclick="closeModal('confirmModal')" class="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition">取消</button>
+                <button onclick="confirmAddPrice()" class="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-md">加入清單</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示訊息視窗 -->
+    <div id="alertModal" class="fixed inset-0 bg-black/60 z-50 hidden flex justify-center items-center px-4 backdrop-blur-sm transition-opacity">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl text-center">
+            <div id="alertIcon" class="text-5xl mb-4 text-orange-500">
+                <i class="fa-solid fa-circle-exclamation"></i>
+            </div>
+            <h3 class="text-xl font-bold text-gray-800 mb-2" id="alertTitle">提示</h3>
+            <p class="text-gray-600 mb-6" id="alertMessage">訊息內容</p>
+            <button onclick="closeModal('alertModal')" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-md">確定</button>
+        </div>
+    </div>
+
+    <!-- 隱藏的 Canvas (用於擷取影像進行 OCR) -->
+    <canvas id="captureCanvas" class="hidden"></canvas>
+
+    <!-- ================= JavaScript 邏輯 ================= -->
+    <script>
+        // --- 全域變數 ---
+        let ocrWorker = null;
+        let isOcrReady = false;
+        let shoppingItems = [];
+        let itemIdCounter = 1;
+        const video = document.getElementById('camera');
+        const scanBtn = document.getElementById('scanBtn');
+        const scanBox = document.getElementById('scanBox');
+
+        // --- 初始化相機 ---
+        async function initCamera() {
+            try {
+                // 優先使用後置鏡頭 (加入 ideal 屬性，允許系統在沒有後鏡頭時彈性提供其他鏡頭)
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { ideal: "environment" } },
+                    audio: false
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                console.warn("預期相機模式存取失敗，嘗試備用模式:", err);
+                try {
+                    // 若仍然失敗 (例如純桌機環境)，退而求其次存取任何可用的預設相機
+                    const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                        video: true,
+                        audio: false
+                    });
+                    video.srcObject = fallbackStream;
+                } catch (fallbackErr) {
+                    console.error("相機存取完全失敗:", fallbackErr);
+                    showAlert("無法存取相機", "找不到可用的相機裝置或權限遭拒，請檢查瀏覽器權限設定。");
+                }
+            }
+        }
+
+        // --- 初始化 Tesseract.js (OCR) ---
+        async function initOCR() {
+            try {
+                const statusEl = document.getElementById('ocrStatus');
+                statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> 載入中文字庫(初次較久)...';
+                
+                // 使用繁體中文與英文模型來辨識文字與數字
+                ocrWorker = await Tesseract.createWorker('chi_tra+eng');
+                
+                isOcrReady = true;
+                statusEl.innerHTML = '<i class="fa-solid fa-check mr-1"></i> 系統就緒';
+                statusEl.classList.replace('bg-blue-700', 'bg-green-600');
+            } catch (err) {
+                console.error("OCR 初始化失敗:", err);
+                document.getElementById('ocrStatus').innerHTML = '<i class="fa-solid fa-triangle-exclamation mr-1"></i> 引擎載入失敗';
+                document.getElementById('ocrStatus').classList.replace('bg-blue-700', 'bg-red-500');
+            }
+        }
+
+        // --- 執行畫面擷取與辨識 ---
+        async function performScan() {
+            if (!isOcrReady) {
+                showAlert("請稍候", "影像辨識引擎仍在載入中，請稍後再試。");
+                return;
+            }
+
+            // 啟動 UI 動畫
+            scanBox.classList.add('scanning');
+            scanBtn.disabled = true;
+            scanBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+
+            try {
+                // 將當下影片畫面繪製到 Canvas
+                const canvas = document.getElementById('captureCanvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // 執行 OCR 辨識
+                const { data: { text } } = await ocrWorker.recognize(canvas);
+                console.log("OCR 原始文字:", text);
+
+                // 停止動畫
+                scanBox.classList.remove('scanning');
+                scanBtn.disabled = false;
+                scanBtn.innerHTML = '<i class="fa-solid fa-camera"></i>';
+
+                // 解析文字找出商品名稱與金額
+                const itemInfo = extractItemInfo(text);
+
+                if (itemInfo.price !== null || itemInfo.name !== "未知商品") {
+                    // 打開確認視窗
+                    openConfirmModal(itemInfo.name, itemInfo.price, "掃描成功");
+                } else {
+                    // 找不到任何資訊
+                    showAlert("辨識失敗", "畫面中未偵測到清晰的文字或金額。請靠近標籤重試，或使用手動輸入。");
+                }
+
+            } catch (err) {
+                console.error("掃描過程發生錯誤:", err);
+                scanBox.classList.remove('scanning');
+                scanBtn.disabled = false;
+                scanBtn.innerHTML = '<i class="fa-solid fa-camera"></i>';
+                showAlert("發生錯誤", "影像處理時發生錯誤，請重試。");
+            }
+        }
+
+        // --- 從文字中萃取最可能的商品名稱與金額數字 ---
+        function extractItemInfo(text) {
+            const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+            let price = null;
+            let name = "未知商品";
+
+            // 尋找包含數字的字串 (允許逗號與小數點)
+            const matches = text.match(/\b\d{1,3}(,\d{3})*(\.\d+)?\b/g) || text.match(/\d+/g);
+            if (matches && matches.length > 0) {
+                const numbers = matches.map(m => parseFloat(m.replace(/,/g, ''))).filter(n => !isNaN(n) && n > 0);
+                if (numbers.length > 0) {
+                    price = Math.max(...numbers);
+                }
+            }
+
+            // 尋找商品名稱：過濾掉純數字/符號的行，取最長的一行作為可能的商品名稱
+            const textLines = lines.filter(line => !line.match(/^[\d\s,.$NT:]+$/i));
+            if (textLines.length > 0) {
+                // 依長度排序取最長
+                name = textLines.sort((a, b) => b.length - a.length)[0];
+                // 稍微清理雜訊，限制長度
+                if(name.length > 20) name = name.substring(0, 20) + '...';
+            }
+
+            return { name, price };
+        }
+
+        // --- UI 狀態更新邏輯 ---
+        function updateUI() {
+            const listEl = document.getElementById('shoppingList');
+            const emptyEl = document.getElementById('emptyState');
+            const totalEl = document.getElementById('totalAmount');
+
+            // 計算總計
+            const total = shoppingItems.reduce((sum, item) => sum + item.price, 0);
+            
+            // 格式化數字 (加入千分位)
+            totalEl.innerText = total.toLocaleString('zh-TW');
+
+            // 更新列表
+            if (shoppingItems.length === 0) {
+                emptyEl.style.display = 'flex';
+                // 清除除了 emptyState 以外的項目
+                Array.from(listEl.children).forEach(child => {
+                    if (child.id !== 'emptyState') child.remove();
+                });
+            } else {
+                emptyEl.style.display = 'none';
+                
+                // 為了效能，這邊用重繪方式 (實務上可用 DOM 操作優化)
+                let html = '';
+                shoppingItems.slice().reverse().forEach((item, index) => {
+                    // 反轉陣列讓最新加入的在最上面
+                    html += `
+                        <li class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex justify-between items-center transform transition-all animate-fade-in">
+                            <div class="flex items-center flex-1 min-w-0 mr-4">
+                                <div class="bg-blue-100 text-blue-600 w-8 h-8 rounded-full flex justify-center items-center font-bold mr-3 text-sm shrink-0">
+                                    ${shoppingItems.length - index}
+                                </div>
+                                <span class="text-gray-700 font-medium truncate">${item.name}</span>
+                            </div>
+                            <div class="flex items-center shrink-0">
+                                <span class="font-bold text-gray-800 text-lg mr-4">$${item.price.toLocaleString('zh-TW')}</span>
+                                <button onclick="removeItem(${item.id})" class="text-red-400 hover:text-red-600 p-2 transition">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </div>
+                        </li>
+                    `;
+                });
+                
+                // 保留 emptyState 並加入新項目
+                listEl.innerHTML = html;
+                listEl.appendChild(emptyEl);
+            }
+        }
+
+        // --- 資料操作邏輯 ---
+        function confirmAddPrice() {
+            const nameVal = document.getElementById('nameInput').value.trim() || "未命名商品";
+            const inputVal = document.getElementById('priceInput').value;
+            const price = parseFloat(inputVal);
+            
+            if (isNaN(price) || price <= 0) {
+                showAlert("格式錯誤", "請輸入有效的金額大於 0。");
+                return;
+            }
+
+            shoppingItems.push({
+                id: itemIdCounter++,
+                name: nameVal,
+                price: price
+            });
+
+            updateUI();
+            closeModal('confirmModal');
+            
+            // 加入成功特效提示
+            const totalAmountEl = document.getElementById('totalAmount');
+            totalAmountEl.classList.add('text-green-500', 'scale-110');
+            setTimeout(() => {
+                totalAmountEl.classList.remove('text-green-500', 'scale-110');
+            }, 300);
+        }
+
+        function removeItem(id) {
+            shoppingItems = shoppingItems.filter(item => item.id !== id);
+            updateUI();
+        }
+
+        // --- 模態視窗控制 ---
+        function openConfirmModal(suggestedName = "", suggestedPrice = "", title = "確認商品與金額") {
+            document.getElementById('confirmModalTitle').innerText = title;
+            document.getElementById('nameInput').value = suggestedName;
+            document.getElementById('priceInput').value = suggestedPrice;
+            
+            const modal = document.getElementById('confirmModal');
+            const content = document.getElementById('confirmModalContent');
+            modal.classList.remove('hidden');
+            // 延遲一點點以觸發動畫
+            setTimeout(() => {
+                content.classList.remove('scale-95');
+                content.classList.add('scale-100');
+            }, 10);
+            
+            // 自動聚焦輸入框方便直接修改
+            document.getElementById('priceInput').focus();
+        }
+
+        function openManualInput() {
+            openConfirmModal("", "", "手動輸入商品與金額");
+        }
+
+        function showAlert(title, message) {
+            document.getElementById('alertTitle').innerText = title;
+            document.getElementById('alertMessage').innerText = message;
+            document.getElementById('alertModal').classList.remove('hidden');
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if(modalId === 'confirmModal') {
+                const content = document.getElementById('confirmModalContent');
+                content.classList.remove('scale-100');
+                content.classList.add('scale-95');
+            }
+            // 延遲隱藏讓縮小動畫播完
+            setTimeout(() => {
+                modal.classList.add('hidden');
+            }, 150);
+        }
+
+        // --- 綁定事件 ---
+        scanBtn.addEventListener('click', performScan);
+
+        // 啟動應用程式
+        window.addEventListener('DOMContentLoaded', () => {
+            initCamera();
+            initOCR();
+        });
+
+    </script>
+</body>
+</html>
